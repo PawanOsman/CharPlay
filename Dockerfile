@@ -1,21 +1,21 @@
 # Multi-stage Dockerfile for Next.js (pnpm) app
 # Builds with dev deps, prunes to prod deps, and runs `next start`
 
-FROM node:22-alpine AS base
+FROM node:22-bookworm-slim AS base
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 
 # ---------- Dependencies ----------
 FROM base AS deps
-# Optional: compatibility libs often needed with Next.js on Alpine
-RUN apk add --no-cache libc6-compat
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates python3 make g++ && rm -rf /var/lib/apt/lists/*
 
 # Enable pnpm via corepack (or install a specific pnpm version)
 RUN corepack enable && corepack prepare pnpm@9.12.3 --activate
 
 # Install dependencies based on lockfile for best caching
 COPY pnpm-lock.yaml* pnpm-workspace.yaml* package.json ./
-RUN pnpm install --frozen-lockfile
+# Pre-fetch deps to global store, then install offline for determinism
+RUN pnpm fetch --frozen-lockfile && pnpm install --offline --frozen-lockfile
 
 # ---------- Builder ----------
 FROM base AS builder
@@ -31,7 +31,7 @@ RUN pnpm build
 RUN pnpm prune --prod
 
 # ---------- Runner ----------
-FROM node:22-alpine AS runner
+FROM node:22-bookworm-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
