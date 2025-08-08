@@ -1,0 +1,17 @@
+services:
+    app:
+        build:
+            context: .
+            dockerfile: Dockerfile
+        image: aicharplay:latest
+        container_name: aicharplay
+        ports:
+            - "3000:3000"
+            - "4000:4000"
+        env_file:
+            - .env
+        environment:
+            NODE_ENV: production
+            NEXT_PUBLIC_SOCKET_PORT: ${NEXT_PUBLIC_SOCKET_PORT:-4000}
+            PAWANKRD_API_KEY: ${PAWANKRD_API_KEY:-}
+        restart: unless-stopped
