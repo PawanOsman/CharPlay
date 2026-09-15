@@ -21,14 +21,17 @@ export default function SocketProvider({ children }: { children: React.ReactNode
 	const [socket, setSocket] = useState<Socket | null>(null);
 
 	useEffect(() => {
+		let active = true;
+		let connection: Socket | undefined;
 		// Ensure server is started, then connect
 		const ensureServer = async () => {
 			try {
-				await fetch("/api/socket", { method: "GET" });
-			} catch {}
-			const port = Number(process.env.NEXT_PUBLIC_SOCKET_PORT || 4000);
-			const url = `${window.location.protocol}//${window.location.hostname}:${port}`;
+				const response = await fetch("/api/connect", { method: "GET" });
+				if (!response.ok || !active) return;
+			} catch { return; }
+			const url = window.location.origin;
 			const s = io(url, { path: "/api/socket", addTrailingSlash: false });
+			connection = s;
 			setSocket(s);
 			s.on("connect", () => setIsConnected(true));
 			s.on("disconnect", () => setIsConnected(false));
@@ -36,17 +39,17 @@ export default function SocketProvider({ children }: { children: React.ReactNode
 		};
 		ensureServer();
 		return () => {
-			if (socket) {
-				socket.off("connect");
-				socket.off("disconnect");
-				socket.off("onlineCount");
-				socket.close();
+			active = false;
+			if (connection) {
+				connection.off("connect");
+				connection.off("disconnect");
+				connection.off("onlineCount");
+				connection.close();
 			}
 		};
-		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
-	const value = useMemo<OnlineContextValue>(() => ({ socket, onlineCount, isConnected }), [onlineCount, isConnected]);
+	const value = useMemo<OnlineContextValue>(() => ({ socket, onlineCount, isConnected }), [socket, onlineCount, isConnected]);
 
 	return <OnlineContext.Provider value={value}>{children}</OnlineContext.Provider>;
 }

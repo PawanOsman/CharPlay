@@ -1,24 +1,43 @@
 import { NextRequest, NextResponse } from "next/server";
-import OpenAI from "openai";
+import type OpenAI from "openai";
+import { createPawanClient } from "@/lib/pawan";
+import { assertSameOrigin, chatRateLimiter, chatRequestSchema, clientRateLimitKey, modelQuota, readJsonBody, RequestError } from "@/lib/server-security";
 
-const openai_pro = new OpenAI({
-	baseURL: "https://api.pawan.krd/v1/",
-	apiKey: process.env.PAWANKRD_API_KEY,
-});
+export const runtime = "nodejs";
 
-const openai_free = new OpenAI({
-	baseURL: "https://api.pawan.krd/cosmosrp/v1/",
-	apiKey: process.env.PAWANKRD_API_KEY,
-});
-
-const openai_free_it = new OpenAI({
-	baseURL: "https://api.pawan.krd/cosmosrp-it/v1/",
-	apiKey: process.env.PAWANKRD_API_KEY,
-});
+function rateLimitResponse(limit: number, retryAfter: number) {
+	return NextResponse.json(
+		{ error: { message: "Request limit reached. Please try again later.", type: "rate_limit_exceeded", code: 429 } },
+		{ status: 429, headers: { "X-RateLimit-Limit": String(limit), "X-RateLimit-Remaining": "0", "Retry-After": String(retryAfter), "Cache-Control": "no-store" } }
+	);
+}
 
 export async function POST(request: NextRequest) {
 	try {
-		const { messages, character, persona, settings } = await request.json();
+		assertSameOrigin(request);
+		const clientKey = clientRateLimitKey(request.headers);
+		const burst = chatRateLimiter.consume(`burst:${clientKey}`, 30, 60_000);
+		if (!burst.allowed) return rateLimitResponse(30, burst.retryAfter);
+
+		const parsed = chatRequestSchema.safeParse(await readJsonBody(request));
+		if (!parsed.success) throw new RequestError("Invalid chat request. Check messages and generation settings.");
+		const { messages, character, persona, settings: modelSettings } = parsed.data;
+		const modelId = modelSettings.model.toLowerCase();
+		const { bucket, limit } = modelQuota(modelId);
+		if (!limit) throw new RequestError("This model requires your own API key.", 403);
+
+		const openai = createPawanClient(modelId.includes("cosmosrp-it") ? "free-it" : modelId.includes("cosmosrp") ? "free" : "pro");
+		if (!openai) throw new RequestError("The chat provider is not configured.", 503);
+
+		const now = Date.now();
+		const dayMs = 24 * 60 * 60 * 1000;
+		const daily = chatRateLimiter.consume(`daily:${clientKey}:${bucket}`, limit, dayMs - (now % dayMs), now);
+		if (!daily.allowed) return rateLimitResponse(limit, daily.retryAfter);
+		const responseHeaders = {
+			"X-RateLimit-Limit": String(limit),
+			"X-RateLimit-Remaining": String(daily.remaining),
+			"Cache-Control": "no-store",
+		};
 
 		// Build system prompt
 		let systemPrompt = "";
@@ -49,100 +68,21 @@ export async function POST(request: NextRequest) {
 
 		systemPrompt += "Respond in character and maintain the personality and speaking style described above.";
 
-		// Prepare messages for OpenAI without placeholder replacement
-		const openaiMessages = [
-			{ role: "system" as const, content: systemPrompt },
-			...messages.map((msg: any) => ({
-				role: msg.role as "user" | "assistant",
-				content: msg.image
-					? [
-							{ type: "text", text: msg.content },
-							{ type: "image_url", image_url: { url: msg.image } },
-					  ]
-					: msg.content,
-			})),
+		const openaiMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+			{ role: "system", content: systemPrompt },
+			...messages.map((message): OpenAI.Chat.Completions.ChatCompletionMessageParam => {
+				if (message.role === "system") return { role: "system", content: message.content };
+				if (message.role === "assistant") return { role: "assistant", content: message.content };
+				return {
+					role: "user",
+					content: message.image ? [
+						{ type: "text", text: message.content },
+						{ type: "image_url", image_url: { url: message.image } },
+					] : message.content,
+				};
+			}),
 		];
-
-		// Use settings from conversation or defaults
-		const modelSettings = settings || {
-			model: "cosmosrp",
-			temperature: 0.7,
-			max_tokens: 1000,
-		};
-
-		// Rate limiting per IP per model per day (in-memory)
-		const getClientIp = (): string => {
-			// Cloudflare specific headers
-			const cfConnectingIp = request.headers.get("cf-connecting-ip");
-			if (cfConnectingIp && cfConnectingIp.trim()) return cfConnectingIp.trim();
-			const trueClientIp = request.headers.get("true-client-ip");
-			if (trueClientIp && trueClientIp.trim()) return trueClientIp.trim();
-
-			// Standard proxy headers
-			const xff = request.headers.get("x-forwarded-for");
-			if (xff) {
-				const first = xff.split(",")[0]?.trim();
-				if (first) return first;
-			}
-			const xreal = request.headers.get("x-real-ip");
-			if (xreal && xreal.trim()) return xreal.trim();
-
-			// Next.js runtime may expose ip
-			// @ts-ignore
-			return (request as any).ip || "unknown";
-		};
-
-		const getToday = (): string => new Date().toISOString().slice(0, 10);
-
-		type Counter = { date: string; count: number };
-		const counters: Map<string, Counter> = (global as any).__ip_model_counters__ || new Map<string, Counter>();
-		(global as any).__ip_model_counters__ = counters;
-
-		const normalizeModel = (m: string): string => String(m || "").toLowerCase();
-		const modelId = normalizeModel(modelSettings.model);
-
-		const getDailyLimitForModel = (m: string): number => {
-			const id = normalizeModel(m);
-			if (id.includes("cosmosrp-3.5")) return 3; // daily limit for cosmosrp-it
-			if (id.includes("cosmosrp")) return 25; // daily limit for cosmosrp-it
-			return 0; // default for pro and others
-		};
-
-		const ip = getClientIp();
-
-		if (!ip || ip === "unknown") {
-			return NextResponse.json({ error: { message: "We couldn't verify your browser, please try again or visit discord.gg/pawan to create your own key.", type: "ip_not_found", code: 400 } }, { status: 400 });
-		}
-
-		const key = `${ip}::${modelId}`;
-		const today = getToday();
-		const limit = getDailyLimitForModel(modelId);
-		const current = counters.get(key);
-		if (!current || current.date !== today) {
-			counters.set(key, { date: today, count: 0 });
-		}
-		const fresh = counters.get(key)!;
-		if (fresh.count >= limit) {
-			const headers = new Headers({
-				"Content-Type": "application/json",
-				"X-RateLimit-Limit": String(limit),
-				"X-RateLimit-Remaining": "0",
-			});
-			return new NextResponse(
-				JSON.stringify({
-					error: { message: "Daily limit reached for this model.", type: "rate_limit_exceeded", code: 429 },
-				}),
-				{ status: 429, headers }
-			);
-		}
-		// Count this attempt
-		fresh.count += 1;
-		const remainingAfter = Math.max(0, limit - fresh.count);
-
-		// Select base client by model name
-		const openai = modelId.includes("cosmosrp-it") ? openai_free_it : modelId.includes("cosmosrp") ? openai_free : openai_pro;
-
-		const completion = await openai.chat.completions.create({
+		const completionSettings = {
 			model: modelSettings.model,
 			messages: openaiMessages,
 			max_tokens: modelSettings.max_tokens,
@@ -150,57 +90,54 @@ export async function POST(request: NextRequest) {
 			top_p: modelSettings.top_p,
 			frequency_penalty: modelSettings.frequency_penalty,
 			presence_penalty: modelSettings.presence_penalty,
-			stream: modelSettings.streaming || false,
-		});
+		};
 
 		if (modelSettings.streaming) {
-			// Return streaming response
-			const stream = new ReadableStream({
-				async start(controller) {
+			const abortController = new AbortController();
+			const signal = AbortSignal.any([request.signal, abortController.signal]);
+			const completion = await openai.chat.completions.create({ ...completionSettings, stream: true }, { signal });
+			const iterator = completion[Symbol.asyncIterator]();
+			const encoder = new TextEncoder();
+			const stream = new ReadableStream<Uint8Array>({
+				async pull(controller) {
 					try {
-						for await (const chunk of completion as any) {
-							const content = chunk.choices[0]?.delta?.content || "";
+						while (true) {
+							const { done, value } = await iterator.next();
+							if (done) {
+								controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+								controller.close();
+								return;
+							}
+							const content = value.choices[0]?.delta?.content;
 							if (content) {
-								controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ content })}\n\n`));
+								controller.enqueue(encoder.encode(`data: ${JSON.stringify({ content })}\n\n`));
+								return;
 							}
 						}
-						controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
-						controller.close();
-					} catch (error) {
-						controller.error(error);
+					} catch {
+						abortController.abort();
+						controller.error(new Error("The response stream was interrupted."));
 					}
 				},
+				async cancel() {
+					abortController.abort();
+					await iterator.return?.();
+				},
 			});
-
 			return new Response(stream, {
-				headers: {
-					"Content-Type": "text/stream",
-					"Cache-Control": "no-cache",
-					Connection: "keep-alive",
-					"X-RateLimit-Limit": String(limit),
-					"X-RateLimit-Remaining": String(remainingAfter),
-				},
+				headers: { ...responseHeaders, "Content-Type": "text/stream; charset=utf-8", "X-Accel-Buffering": "no" },
 			});
-		} else {
-			// Return regular JSON response
-			const responseMessage = completion.choices[0]?.message?.content || "I apologize, but I couldn't generate a response.";
-			const headers = new Headers({
-				"X-RateLimit-Limit": String(limit),
-				"X-RateLimit-Remaining": String(remainingAfter),
-			});
-			return NextResponse.json({ message: responseMessage }, { headers });
 		}
-	} catch (error) {
-		console.error("OpenAI API error:", error);
+
+		const completion = await openai.chat.completions.create({ ...completionSettings, stream: false }, { signal: request.signal });
 		return NextResponse.json(
-			{
-				error: {
-					message: (error as any)?.error?.message || (error as any)?.message || "Failed to generate response",
-					type: (error as any)?.error?.type || "server_error",
-					code: (error as any)?.error?.code || undefined,
-				},
-			},
-			{ status: 500 }
+			{ message: completion.choices[0]?.message?.content || "I apologize, but I couldn't generate a response." },
+			{ headers: responseHeaders }
 		);
+	} catch (error) {
+		// Provider errors can contain credentials, request contents, or internal details.
+		const status = error instanceof RequestError ? error.status : 502;
+		const message = error instanceof RequestError ? error.message : "The chat provider could not complete the request. Please try again.";
+		return NextResponse.json({ error: { message, type: status < 500 ? "invalid_request_error" : "server_error", code: status } }, { status, headers: { "Cache-Control": "no-store" } });
 	}
 }

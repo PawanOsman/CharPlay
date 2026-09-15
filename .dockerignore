@@ -1,37 +1,30 @@
-# Dependencies
-node_modules
-.pnpm-store
+# Allow only the inputs needed to build the application. This also excludes
+# credentials, local build/dependency caches, archives, and host executables.
+**
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!next.config.ts
+!next-env.d.ts
+!tsconfig.json
+!postcss.config.mjs
+!components.json
+!src/
+!src/**
+!public/
+!public/**
+!scripts/
+!scripts/**
 
-# Next.js build output
-.next
-out
-
-# Logs
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-
-# Local env files (pass via Docker env or secrets)
-.env
-.env.*
-!.env.example
-
-# VCS
-.git
-.gitignore
-
-# CI configs
-.github
-
-# OS / Editor
-.DS_Store
-*.swp
-*.swo
-*.tmp
-.vscode
-.idea
-
-# Docker
-Dockerfile
-.dockerignore
+# Never send secret files or generated caches, including nested copies.
+**/.env
+**/.env.*
+**/.npmrc
+**/.git
+**/node_modules
+**/.next
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.log

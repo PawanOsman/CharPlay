@@ -166,8 +166,8 @@ export default function Conversation({ character, conversation, persona, onConve
 
 			const getPawanBaseUrl = (modelId: string) => {
 				const id = modelId.toLowerCase();
-				if (id.includes("cosmosrp-it")) return "https://api.pawan.krd/cosmosrp-it/v1";
-				if (id.includes("cosmosrp")) return "https://api.pawan.krd/cosmosrp/v1";
+				if (id === "cosmosrp-it") return "https://api.pawan.krd/cosmosrp-it/v1";
+				if (id === "cosmosrp") return "https://api.pawan.krd/cosmosrp/v1";
 				return "https://api.pawan.krd/v1";
 			};
 

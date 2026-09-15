@@ -6,12 +6,24 @@ services:
         image: aicharplay:latest
         container_name: aicharplay
         ports:
-            - "3000:3000"
-            - "4000:4000"
-        env_file:
-            - .env
+            # Keep this behind a reverse proxy that preserves the public Host.
+            - "${BIND_ADDRESS:-127.0.0.1}:3000:3000"
         environment:
             NODE_ENV: production
-            NEXT_PUBLIC_SOCKET_PORT: ${NEXT_PUBLIC_SOCKET_PORT:-4000}
+            SOCKET_HOST: 0.0.0.0
+            SOCKET_PORT: 4000
+            APP_ORIGIN: ${APP_ORIGIN:-}
+            TRUSTED_PROXY_IP_HEADER: ${TRUSTED_PROXY_IP_HEADER:-}
             PAWANKRD_API_KEY: ${PAWANKRD_API_KEY:-}
+        user: "1000:1000"
+        init: true
+        read_only: true
+        cap_drop:
+            - ALL
+        security_opt:
+            - no-new-privileges:true
+        pids_limit: 256
+        tmpfs:
+            - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+            - /app/.next/cache:rw,noexec,nosuid,nodev,size=128m,uid=1000,gid=1000,mode=0700
         restart: unless-stopped

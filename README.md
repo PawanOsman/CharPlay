@@ -1,171 +1,82 @@
-## CharPlay (AI Character Playground)
+# CharPlay (AI Character Playground)
 
-An AI character chat playground with a modern UI, real-time presence via Socket.IO, and a pluggable model backend. Built with Next.js, React, Tailwind CSS, and pnpm. A hosted demo is available at the following link: [CharPlay Demo](https://play.pawan.krd).
+An AI character chat playground with local conversation storage, Socket.IO presence, and a pluggable model backend. Built with Next.js 16, React 19, Tailwind CSS 4, and pnpm.
 
-### Table of contents
-- [Overview](#overview)
-- [Features](#features)
-- [Architecture](#architecture)
-- [Tech stack](#tech-stack)
-- [Environment variables](#environment-variables)
-- [Quick start with Docker](#quick-start-with-docker)
-  - [Docker Compose](#docker-compose)
-  - [Plain Docker](#plain-docker)
-- [Run on Android with Termux](#run-on-android-with-termux)
-- [Local development](#local-development)
-- [Deployment](#deployment)
-- [Troubleshooting](#troubleshooting)
-- [License](#license)
+## Development
 
-## Overview
-CharPlay lets you browse characters, start conversations, and chat in real-time. It exposes a Socket.IO endpoint for online presence and supports model backends via server routes.
+Use Node.js 22.13+ or Node.js 24 LTS and the pinned pnpm 11.14.0 release.
 
-## Features
-- **Modern UI**: Responsive layouts, themed components, and smooth interactions.
-- **Real-time presence**: Live online count via Socket.IO.
-- **Character-centric UX**: Character selector, profiles, and conversation management.
-- **Persistence helpers**: Local storage hooks for settings and state.
-- **API routes**: Chat/model endpoints and Socket.IO bootstrap via Next.js App Router.
-- **Production Docker image**: Multi-stage build with pnpm, small runtime image.
-
-## Architecture
-- **Next.js app server**: Listens on port 3000 by default.
-- **Socket.IO server**: Separate port, controlled by `NEXT_PUBLIC_SOCKET_PORT` (defaults to `4000`).
-- **App Router**: API routes under `src/app/api/*`.
-
-Key paths:
-- `src/app/api/chat/route.ts` – chat/model API
-- `src/app/api/socket/route.ts` – starts Socket.IO server at `NEXT_PUBLIC_SOCKET_PORT`
-- `src/components/SocketProvider.tsx` – client connects to Socket.IO at `http(s)://<host>:<port>/api/socket`
-
-## Tech stack
-- **Framework**: Next.js 15, React 19
-- **Styling**: Tailwind CSS 4
-- **Real-time**: Socket.IO
-- **Forms/Validation**: React Hook Form, Zod
-- **Build tool**: pnpm with Corepack
-
-## Environment variables
-Copy `env.example` to `.env` and set values.
-
-- **PAWANKRD_API_KEY**: API key for your model/provider (if required by your backend configuration).
-- **NEXT_PUBLIC_SOCKET_PORT**: Port Socket.IO listens on (default `4000`). Must be reachable by the browser when the app runs.
-
-Example `.env`:
-```env
-PAWANKRD_API_KEY=your_key_here
-NEXT_PUBLIC_SOCKET_PORT=4000
-```
-
-## Quick start with Docker
-
-The repository includes a production-ready `Dockerfile` and `docker-compose.yml`.
-
-### Docker Compose
-```bash
-docker compose up -d --build
-```
-Then open `http://localhost:3000`. Real-time socket runs on port `4000`.
-
-- **Env**: Compose will read `.env` automatically (see variables above).
-- **Ports**: Maps `3000:3000` and `4000:4000` by default.
-
-Update `.env` as needed before running:
-```bash
-cp env.example .env
-# edit .env
-```
-
-### Plain Docker
-Build:
-```bash
-docker build -t pawanosman/charplay:latest .
-```
-Run:
-```bash
-docker run --rm \
-  -p 3000:3000 -p 4000:4000 \
-  -e NEXT_PUBLIC_SOCKET_PORT=4000 \
-  -e PAWANKRD_API_KEY=your_key_here \
-  pawanosman/charplay:latest
-```
-
-Open `http://localhost:3000`.
-
-## Run on Android with Termux
-You can run the app directly in Termux using Node.js. This is the simplest path on Android.
-
-1) Install Termux (preferably from F-Droid) and open it.
-
-2) Update and install prerequisites:
-```bash
-pkg update && pkg upgrade -y
-pkg install -y nodejs-lts git
-```
-
-3) Enable Corepack (pnpm) and clone the repo:
 ```bash
 corepack enable
-corepack prepare pnpm@latest --activate
-git clone https://github.com/PawanOsman/CharPlay.git
-cd CharPlay
-```
-
-4) Configure environment:
-```bash
-cp env.example .env
-sed -i 's/NEXT_PUBLIC_SOCKET_PORT=.*/NEXT_PUBLIC_SOCKET_PORT=4000/' .env
-```
-
-5) Install, build, and start:
-```bash
+corepack install
 pnpm install --frozen-lockfile
-pnpm build
-pnpm start
-```
-
-6) Open your Android browser to `http://localhost:3000`.
-
-Notes:
-- If port `4000` is busy, change `NEXT_PUBLIC_SOCKET_PORT` in `.env` and restart.
-- Termux does not run Docker natively. If you prefer containers, consider a proot-based Linux distro and rootless Podman/Docker, but the Node.js method above is simpler and more reliable on Android.
-
-## Local development
-Prerequisites: Node 18+ or 20+, pnpm 9+ (via Corepack).
-
-```bash
-corepack enable
-corepack prepare pnpm@latest --activate
-pnpm install
 cp env.example .env
 pnpm dev
 ```
 
-App dev server will run on `http://localhost:3000`. Socket server will bind to `NEXT_PUBLIC_SOCKET_PORT` (default `4000`).
+Open http://localhost:3000. Development binds to localhost. Set the provider key in `.env` to enable the hosted chat backend. Bring-your-own-key providers remain browser-side.
 
-## Deployment
-- **Docker Hub image**: The CI publishes to `pawanosman/charplay:latest` on every push.
-- **GitHub Actions**: See `.github/workflows/docker-publish.yml`. Configure secrets:
-  - `DOCKER_USERNAME`
-  - `DOCKER_PASSWORD`
+## Checks and production build
 
-Running detached with Compose on a server:
 ```bash
-docker compose pull
-docker compose up -d
+pnpm lint
+pnpm typecheck
+pnpm test:security
+pnpm audit:security
+pnpm build
+pnpm start
 ```
 
-Behind a reverse proxy, ensure both ports are reachable by the client. If terminating TLS and proxying, you can forward Socket.IO at `/api/socket` to the socket port (`/api/socket` path is preserved on both ports by design).
+`pnpm start` serves the app on port **6328**. The build creates standalone output and strips copied dotenv files from that artifact. Keep credentials in the runtime environment. Existing client-component lint findings remain visible as warnings; server/API rules are enforced.
 
-## Troubleshooting
-- **Socket not connecting**: Confirm `NEXT_PUBLIC_SOCKET_PORT` is exposed and reachable from the browser. Map `-p 4000:4000` and verify CORS/origin is `*` (default in the server route).
-- **Blank page or build error**: Rebuild the image or reinstall deps: `pnpm install` then `pnpm build`.
-- **Env not applied**: With Compose, verify `.env` exists in the repository root. With plain Docker, pass `-e` flags.
-- **Android (Termux)**: Use Node.js path above rather than Docker. Ensure you use `nodejs-lts` and `corepack` to get pnpm.
+For the standalone server, copy `public` and `.next/static` into their corresponding locations inside `.next/standalone`, then run `node .next/standalone/server.js` with `PORT`, `HOSTNAME`, and runtime credentials set. The Dockerfile performs these copies automatically.
 
----
+HTTP security integration tests can also run against a dedicated, freshly built test server with **no provider credentials**:
 
-For questions or feedback, feel free to open an issue or reach out. Enjoy CharPlay!
+```bash
+SECURITY_TEST_BASE_URL=http://127.0.0.1:16328 pnpm test:security
+```
+
+The integration suite skips when this variable is unset. It checks malformed requests and socket connections; never point it at a production service.
+
+## Environment
+
+| Variable | Purpose |
+| --- | --- |
+| `PAWANKRD_API_KEY` | Server-side provider credential. Required for the hosted chat/model endpoints. |
+| `APP_ORIGIN` | Public application origin, for example `https://play.example.com`. Set this in production. |
+| `TRUSTED_PROXY_IP_HEADER` | Optional single-IP header overwritten by your trusted reverse proxy, for example `x-real-ip`. Leave empty if there is no trusted proxy. |
+| `SOCKET_PORT` | Internal Socket.IO port, default `4000`. A custom value must be identical at build time and runtime because Next.js records rewrites during the build. Docker uses `4000`. |
+| `SOCKET_HOST` | Socket bind address, default `127.0.0.1`; Compose sets `0.0.0.0` inside the container. |
+| `BIND_ADDRESS` | Compose host bind address, default `127.0.0.1`. |
+
+The browser uses same-origin `/api/socket`; port 4000 is internal. The Next.js rewrite forwards socket traffic to the local Socket.IO listener. `/api/connect` starts that listener lazily.
+
+IP headers are ignored unless explicitly trusted. Without one, anonymous users share a quota. A trusted reverse proxy must overwrite the configured header with a single verified client IP and prevent requests bypassing the proxy. Limits are process-local and reset on restart; use a shared gateway limiter for multiple replicas or stronger abuse prevention.
+
+## Docker
+
+```bash
+cp env.example .env
+# Set fresh credentials and the production APP_ORIGIN.
+docker compose up -d --build
+```
+
+Compose serves http://127.0.0.1:3000 for a reverse proxy. Configure the proxy to preserve the public Host and support WebSocket upgrades. The container runs as a non-root user with a read-only filesystem, dropped capabilities, and bounded temporary storage. Runtime credentials are passed explicitly; dotenv files are excluded from the image build.
+
+The pinned Node image digest should be refreshed when applying security updates. Use a clean machine to rebuild after a compromise; see [SECURITY.md](SECURITY.md).
+
+## CI
+
+CI requires dependency audit, lint, type checks, and security unit tests before building images. Pull requests and branch pushes build without publishing. Default-branch pushes publish `pawanosman/charplay:latest` and a commit-specific tag using `DOCKER_USERNAME` and `DOCKER_PASSWORD` secrets.
+
+## Key files
+
+- `src/app/api/chat/route.ts`: validated chat API and provider streaming.
+- `src/app/api/models/route.ts`: cached model list.
+- `src/app/api/connect/route.ts`: local Socket.IO server.
+- `src/lib/server-security.ts`: body limits, schema validation, origin checks, and quotas.
+- `SECURITY.md`: incident findings and deployment recovery requirements.
 
 ## License
 

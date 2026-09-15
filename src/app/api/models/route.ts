@@ -1,46 +1,45 @@
-import { NextResponse } from "next/server";
-import OpenAI from "openai";
+import { NextRequest, NextResponse } from "next/server";
+import { createPawanClient } from "@/lib/pawan";
+import { assertSameOrigin, RequestError } from "@/lib/server-security";
 
-const openai_pro = new OpenAI({
-	baseURL: "https://api.pawan.krd/v1/",
-	apiKey: process.env.PAWANKRD_API_KEY,
-});
+export const runtime = "nodejs";
 
-const openai_free = new OpenAI({
-	baseURL: "https://api.pawan.krd/cosmosrp/v1/",
-	apiKey: process.env.PAWANKRD_API_KEY,
-});
+type ModelOption = { id: string; name: string; owner: string; description?: string; order?: number };
+let cache: { expiresAt: number; models: ModelOption[] } | undefined;
+let pending: Promise<ModelOption[]> | undefined;
 
-export async function GET() {
+async function loadModels(): Promise<ModelOption[]> {
+	const free = createPawanClient("free");
+	const pro = createPawanClient("pro");
+	if (!free || !pro) throw new RequestError("The chat provider is not configured.", 503);
+	const responses = await Promise.all([free.models.list(), pro.models.list()]);
+	return responses.flatMap((response) => response.data).map((model) => {
+		const details = model as typeof model & { name?: unknown; description?: unknown; order?: unknown };
+		return {
+			id: model.id,
+			name: typeof details.name === "string" ? details.name : model.id,
+			owner: model.owned_by,
+			description: typeof details.description === "string" ? details.description : undefined,
+			order: typeof details.order === "number" ? details.order : undefined,
+		};
+	}).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export async function GET(request: NextRequest) {
 	try {
-		const models_free = await openai_free.models.list();
-		const models_pro = await openai_pro.models.list();
-
-		const models: any = [...models_free.data, ...models_pro.data];
-
-		// Filter for chat completion models and format them
-		const chatModels = models
-			.map((model: any) => ({
-				id: model.id,
-				name: model.name,
-				owner: model.owned_by,
-				description: model.description,
-				order: model.order,
-			}))
-			.sort((a: any, b: any) => a.name.localeCompare(b.name));
-
-        return NextResponse.json(chatModels);
+		assertSameOrigin(request);
+		if (!cache || cache.expiresAt <= Date.now()) {
+			// Coalesce simultaneous public requests instead of multiplying credentialed upstream calls.
+			pending ??= loadModels().then((models) => {
+				cache = { models, expiresAt: Date.now() + 5 * 60_000 };
+				return models;
+			}).finally(() => { pending = undefined; });
+			await pending;
+		}
+		return NextResponse.json(cache!.models, { headers: { "Cache-Control": "public, max-age=60" } });
 	} catch (error) {
-		console.error("Error fetching models:", error);
-        return NextResponse.json(
-            {
-                error: {
-                    message: (error as any)?.error?.message || (error as any)?.message || "Failed to fetch models",
-                    type: (error as any)?.error?.type || "server_error",
-                    code: (error as any)?.error?.code || undefined,
-                },
-            },
-            { status: 500 }
-        );
+		const status = error instanceof RequestError ? error.status : 502;
+		const message = error instanceof RequestError ? error.message : "Unable to load models. Please try again.";
+		return NextResponse.json({ error: { message, type: "server_error", code: status } }, { status, headers: { "Cache-Control": "no-store" } });
 	}
 }

@@ -1,58 +1,34 @@
-# Multi-stage Dockerfile for Next.js (pnpm) app
-# Builds with dev deps, prunes to prod deps, and runs `next start`
-
-FROM node:22-bookworm-slim AS base
+# Refresh this verified Node 24 LTS digest when applying base-image security updates.
+FROM node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS base
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 
-# ---------- Dependencies ----------
 FROM base AS deps
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates python3 make g++ && rm -rf /var/lib/apt/lists/*
+RUN corepack enable
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+# Corepack reads the exact pnpm version from package.json. Only explicitly
+# approved dependency build scripts may run (see pnpm-workspace.yaml).
+RUN corepack install && pnpm install --frozen-lockfile
 
-# Enable pnpm via corepack (or install a specific pnpm version)
-RUN corepack enable && corepack prepare pnpm@9.12.3 --activate
-
-# Install dependencies based on lockfile for best caching
-COPY pnpm-lock.yaml* pnpm-workspace.yaml* package.json ./
-# Pre-fetch deps to global store, then install offline for determinism
-RUN pnpm fetch --frozen-lockfile && pnpm install --offline --frozen-lockfile
-
-# ---------- Builder ----------
 FROM base AS builder
-ENV NODE_ENV=development
-RUN corepack enable && corepack prepare pnpm@9.12.3 --activate
+RUN corepack enable
 COPY --from=deps /app/node_modules ./node_modules
+# .dockerignore allows only application sources and build configuration.
 COPY . .
+RUN corepack install && pnpm build
 
-# Build Next.js
-RUN pnpm build
+FROM base AS runner
+ENV NODE_ENV=production \
+    PORT=3000 \
+    HOSTNAME=0.0.0.0
 
-# Prune to production-only dependencies to shrink runtime image
-RUN pnpm prune --prod
+# Standalone output includes only the dependencies traced by Next.js.
+# Application files remain root-owned; only the runtime cache is writable.
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
+RUN mkdir -p .next/cache && chown node:node .next/cache
 
-# ---------- Runner ----------
-FROM node:22-bookworm-slim AS runner
-WORKDIR /app
-ENV NODE_ENV=production
-ENV PORT=3000
-ENV HOSTNAME=0.0.0.0
-ENV NEXT_TELEMETRY_DISABLED=1
-
-# Create non-root user and set ownership
-RUN addgroup -S nextjs && adduser -S nextjs -G nextjs
-
-# Copy the minimal runtime artifacts
-COPY --chown=nextjs:nextjs --from=builder /app/node_modules ./node_modules
-COPY --chown=nextjs:nextjs --from=builder /app/package.json ./package.json
-COPY --chown=nextjs:nextjs --from=builder /app/next.config.ts ./next.config.ts
-COPY --chown=nextjs:nextjs --from=builder /app/public ./public
-COPY --chown=nextjs:nextjs --from=builder /app/.next ./.next
-
-USER nextjs
-
+USER node
 EXPOSE 3000 4000
-
-# Start Next.js without requiring pnpm in the runner
-CMD ["node", "node_modules/next/dist/bin/next", "start", "-p", "3000"]
-
-
+CMD ["node", "server.js"]
